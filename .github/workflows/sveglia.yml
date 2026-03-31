@@ -1,0 +1,25 @@
+name: Aggiornamento Canali TV Giornaliero
+
+on:
+  schedule:
+    # Si avvia ogni mattina alle 6:00 (orario UTC, in Italia sono le 7:00 o le 8:00 a seconda dell'ora legale)
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Questo ti permette di avviarlo anche a mano con un click!
+
+jobs:
+  aggiorna-database:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scarica il codice
+        uses: actions/checkout@v3
+
+      - name: Prepara Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Installa gli strumenti
+        run: pip install -r requirements.txt
+
+      - name: Avvia il Robottino
+        run: python bot.py
