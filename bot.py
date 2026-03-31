@@ -1,55 +1,84 @@
 import requests
+from bs4 import BeautifulSoup
 import json
 from datetime import datetime
 
-# LE TUE CHIAVI E LINK
+# LE TUE CHIAVI
 API_KEY = '933a5e8f87b5a55a4632726a2df923d4'
 FIREBASE_URL = "https://partite-live-default-rtdb.europe-west1.firebasedatabase.app/canali_tv.json"
 
-# I campionati VIP (Serie A, Champions, Nazionali, ecc.)
-VIP_LEAGUES = [135, 137, 140, 143, 39, 2, 3, 1, 4, 10, 21] 
-
-def aggiorna_canali_veri():
+def raschia_vero_internet():
     oggi = datetime.now().strftime('%Y-%m-%d')
-    print(f"Inizio ricerca reale per le partite del: {oggi}")
+    print("1. Guardo l'API SOLO per sapere chi gioca oggi (i nomi delle squadre)...")
     
-    headers = {'x-apisports-key': API_KEY}
     url_fixtures = f"https://v3.football.api-sports.io/fixtures?date={oggi}"
-    res = requests.get(url_fixtures, headers=headers).json()
-
-    partite_in_tv = {}
-
-    if 'response' not in res or not res['response']:
-        print("Nessuna partita trovata oggi nell'API.")
-        partite_in_tv["Oggi"] = "Nessuna partita in programma."
-    else:
-        partite_vip = [p for p in res['response'] if p['league']['id'] in VIP_LEAGUES]
-        print(f"Trovate {len(partite_vip)} partite VIP oggi. Controllo i canali...")
-
-        for p in partite_vip:
-            fixture_id = p['fixture']['id']
-            nome_partita = f"{p['teams']['home']['name']} - {p['teams']['away']['name']}"
-
-            url_tv = f"https://v3.football.api-sports.io/fixtures/tv?fixture={fixture_id}"
-            res_tv = requests.get(url_tv, headers=headers).json()
-
-            if 'response' in res_tv and res_tv['response']:
-                # Cerca i canali italiani
-                canali_ita = [t['tv'] for t in res_tv['response'] if t.get('country', '').lower() == 'italy']
-                
-                if canali_ita:
-                    partite_in_tv[nome_partita] = "📺 " + " e ".join(canali_ita)
-
-        if not partite_in_tv:
-            partite_in_tv["Nessun Match"] = "Nessun canale italiano comunicato per i big match di oggi."
-
-    # Invia i dati a Firebase
-    risposta_fb = requests.put(FIREBASE_URL, data=json.dumps(partite_in_tv))
+    res = requests.get(url_fixtures, headers={'x-apisports-key': API_KEY}).json()
     
-    if risposta_fb.status_code == 200:
-        print("✅ Successo! Firebase aggiornato con le partite VERE.")
-    else:
-        print("❌ Errore con Firebase:", risposta_fb.text)
+    partite_in_tv = {}
+    if 'response' not in res or not res['response']:
+        partite_in_tv["Oggi"] = "Nessuna partita in programma."
+        requests.put(FIREBASE_URL, data=json.dumps(partite_in_tv))
+        return
+
+    print("2. Vado su INTERNET a leggere i veri siti italiani (SCRAPING)...")
+    
+    # Il robottino entra fisicamente in un sito di Guida TV per estrarre il testo
+    url_guida = "https://www.staseraintv.com/calcio_in_tv.html"
+    headers_web = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    try:
+        risposta_web = requests.get(url_guida, headers=headers_web)
+        soup = BeautifulSoup(risposta_web.text, 'html.parser')
+        
+        # Trasforma l'intero sito in un testo leggibile
+        testo_sito = soup.get_text(separator=" ", strip=True).upper()
+        
+        print("3. Incrocio i nomi delle squadre col testo raschiato dal sito...")
+        for p in res['response']:
+            squadra_casa = p['teams']['home']['name'].upper()
+            squadra_trasf = p['teams']['away']['name'].upper()
+            nome_partita = f"{p['teams']['home']['name']} - {p['teams']['away']['name']}"
+            
+            # Cerca se il sito internet parla di questa squadra
+            if squadra_casa in testo_sito or squadra_trasf in testo_sito:
+                
+                # Trova in che punto della pagina c'è la squadra
+                indice = testo_sito.find(squadra_casa)
+                if indice == -1:
+                    indice = testo_sito.find(squadra_trasf)
+                    
+                # Ritaglia solo il pezzo di testo attorno alla squadra (per capire il canale)
+                inizio = max(0, indice - 100)
+                fine = min(len(testo_sito), indice + 100)
+                testo_vicino = testo_sito[inizio:fine]
+                
+                canali_trovati = []
+                # Ora cerchiamo i canali REALI in quel pezzo di testo
+                if "DAZN" in testo_vicino: canali_trovati.append("DAZN")
+                if "SKY SPORT" in testo_vicino or "SKY CALCIO" in testo_vicino or "SKY" in testo_vicino: canali_trovati.append("Sky Sport")
+                if "RAI" in testo_vicino: canali_trovati.append("Rai")
+                if "MEDIASET" in testo_vicino or "CANALE 5" in testo_vicino or "ITALIA 1" in testo_vicino: canali_trovati.append("Mediaset")
+                if "AMAZON" in testo_vicino or "PRIME" in testo_vicino: canali_trovati.append("Amazon Prime Video")
+                if "TV8" in testo_vicino: canali_trovati.append("TV8")
+                if "NOVE" in testo_vicino: canali_trovati.append("Nove")
+                if "SPORTITALIA" in testo_vicino: canali_trovati.append("Sportitalia")
+                if "YOUTUBE" in testo_vicino or "CRONACHE" in testo_vicino: canali_trovati.append("YouTube / Streaming")
+
+                if canali_trovati:
+                    canali_unici = list(set(canali_trovati))
+                    partite_in_tv[nome_partita] = "📺 " + " e ".join(canali_unici)
+                else:
+                    partite_in_tv[nome_partita] = "📺 Partita sul web, ma canale non identificato"
+
+    except Exception as e:
+        partite_in_tv["Errore"] = f"Errore durante lo scraping: {e}"
+
+    if not partite_in_tv:
+        partite_in_tv["Oggi"] = "Scraping completato: Nessun incrocio esatto trovato per le partite di oggi sui siti italiani."
+
+    # 4. Invia i dati a Firebase
+    requests.put(FIREBASE_URL, data=json.dumps(partite_in_tv))
+    print("✅ Firebase aggiornato estraendo dati dai VERI siti web.")
 
 if __name__ == "__main__":
-    aggiorna_canali_veri()
+    raschia_vero_internet()
